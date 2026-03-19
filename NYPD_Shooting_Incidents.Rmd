@@ -1,0 +1,179 @@
+---
+title: "NYPD Shooting Analysis"
+author: "M. Deetz"
+date: "2026-03-17"
+output:
+  pdf_document: default
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+# Global chunk options — echo = TRUE means code will be visible in the output document
+knitr::opts_chunk$set(echo = TRUE)
+
+# tidyverse includes ggplot2, dplyr, readr, and other core data tools
+# lubridate makes it easy to parse and work with date columns
+library(tidyverse)
+library(lubridate)
+```
+
+```{r load-data, message=FALSE}
+# Store the URL for the NYPD Shooting Incident dataset from NYC Open Data
+url_link <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+
+# Load a raw copy of the data to preserve the original — never modified
+incident_data_raw <- read_csv(url_link)
+
+# Load a second copy that we will clean and transform for analysis
+incident_data_cleaned <- read_csv(url_link)
+
+incident_data_cleaned <- incident_data_cleaned %>%
+  # Parse OCCUR_DATE from a character string (MM/DD/YYYY) into a proper R Date object
+  mutate(Date = mdy(OCCUR_DATE)) %>%
+  # Drop columns that are not needed for this analysis
+  select(-c(Latitude, Longitude, Lon_Lat, X_COORD_CD, Y_COORD_CD, OCCUR_DATE, JURISDICTION_CODE)) %>%
+  # Rename OCCUR_TIME to something more readable
+  rename(Time = OCCUR_TIME)
+```
+
+## Data Summary & Missing Value Check
+```{r missing-data-check}
+# Since our analysis only uses the Date column, we only need to verify
+# that no Date values are missing. Every row represents one shooting
+# incident, so a missing Date would mean we can't place that incident
+# in time at all.
+date_missing <- sum(is.na(incident_data_cleaned$Date))
+
+# Display the result as a simple one-row table
+knitr::kable(
+  data.frame(
+    Column  = "Date",
+    Total_Rows = nrow(incident_data_cleaned),
+    Missing = date_missing
+  ),
+  col.names = c("Column", "Total Rows", "Missing Values")
+)
+```
+
+This analysis focuses exclusively on the count and timing of shooting
+incidents. Each row in the dataset represents a single shooting event, meaning
+the only value missing value that would pose an issue is the Date field.
+Other fields such as victim demographics, perpetrator information, and
+location information are not used and any missing values in those
+columns have no bearing on the results. As shown above, the Date column
+contains `r date_missing` missing values, so no rows need to be removed
+or imputed.
+
+## Shootings per Year
+
+```{r shootings-per-year, fig.width=10, fig.height=5}
+# Extract the year from each incident's Date and count how many shootings occurred each year
+yearly_counts <- incident_data_cleaned %>%
+  mutate(year = year(Date)) %>%
+  count(year, name = "shootings")
+
+# Bar chart — each bar represents one calendar year
+ggplot(yearly_counts, aes(x = year, y = shootings)) +
+  geom_col(fill = "#2563EB") +
+  # Force a tick mark on the x-axis for every year in the data
+  scale_x_continuous(breaks = unique(yearly_counts$year)) +
+  labs(
+    title = "NYC Shooting Incidents per Year",
+    x = NULL,
+    y = "Number of Shootings"
+  ) +
+  theme_minimal() +
+  theme(
+    # Angle the year labels so they don't overlap
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(size = 14, face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+
+The annual shooting data reveals interesting trends across the given timeframe. Shooting incidents were at their highest in 2006, with a peak of 2055. In the 2010's, we saw these numbers start to decline. They reached a record low of 958 incidents in 2018. There was a large spike in 2020, numbers reaching back up to peak years in the late 2000's. While the cause of that shift can not be determined from the data, things like Covid-19, a new president, policy change, and social movements such as BLM, could be factors in the drastic increase from 2019 to 2020. Since then, the levels have started to decrease again, getting close to 2017-2019 levels. 
+
+## Monthly Shootings: 2023 & 2024 vs. Historical Average
+
+```{r monthly-comparison, fig.width=11, fig.height=5.5}
+# Define month order explicitly so the x-axis always runs Jan through Dec
+month_levels <- c("Jan","Feb","Mar","Apr","May","Jun",
+                  "Jul","Aug","Sep","Oct","Nov","Dec")
+
+# --- Historical average data (red line) ---
+# Step 1: Count shootings per year-month combination across the full dataset
+# Step 2: Average those monthly counts across all years to get a typical value per month
+avg_by_month <- incident_data_cleaned %>%
+  mutate(
+    year  = year(Date),
+    month = factor(month(Date, label = TRUE, abbr = TRUE), levels = month_levels)
+  ) %>%
+  count(year, month, name = "shootings") %>%
+  group_by(month) %>%
+  summarise(avg_shootings = mean(shootings), .groups = "drop")
+
+# --- Recent years data (bars) ---
+# Filter down to only 2023 and 2024, then count shootings per month for each year
+# year is converted to a factor so ggplot treats it as a discrete grouping variable (needed for dodge)
+recent_by_month <- incident_data_cleaned %>%
+  mutate(
+    year  = year(Date),
+    month = factor(month(Date, label = TRUE, abbr = TRUE), levels = month_levels)
+  ) %>%
+  filter(year %in% c(2023, 2024)) %>%
+  count(year, month, name = "shootings") %>%
+  mutate(year = as.factor(year))
+
+# --- Build the chart ---
+# ggplot() is called with no data argument because the two layers use different data frames
+ggplot() +
+  # Dodged bars show 2023 and 2024 side by side for each month
+  geom_col(
+    data = recent_by_month,
+    aes(x = month, y = shootings, fill = year),
+    position = "dodge",
+    alpha = 0.85
+  ) +
+  # Line connects the historical monthly averages across all 12 months
+  # group = 1 tells ggplot to connect all points into a single continuous line
+  geom_line(
+    data = avg_by_month,
+    aes(x = month, y = avg_shootings, group = 1, color = "Historical Average"),
+    linewidth = 1.1
+  ) +
+  # Points on the line make individual monthly averages easier to read
+  geom_point(
+    data = avg_by_month,
+    aes(x = month, y = avg_shootings, color = "Historical Average"),
+    size = 2.5
+  ) +
+  # Assign specific colors to each year's bars and to the average line
+  scale_fill_manual(values = c("2023" = "#2563EB", "2024" = "#60A5FA")) +
+  scale_color_manual(values = c("Historical Average" = "#DC2626")) +
+  labs(
+    title = "Monthly Shootings: 2023 & 2024 vs. Historical Average",
+    x = NULL,
+    y = "Number of Shootings",
+    fill = "Year",
+    color = NULL
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title   = element_text(size = 14, face = "bold"),
+    panel.grid.minor = element_blank(),
+    # Place the legend above the chart so it doesn't obscure any bars
+    legend.position  = "top"
+  )
+```
+
+
+
+Looking at the monthly shooting incident data for 2023 and 2024, we can determine what months and what times of year the most incidents typically occur. The graph shows the summer months typically have the most shootings out of the year and the winter months with the least amount. When you layer on the monthly historical averages, you can start to compare how the past few years look to the past 20 years. While most months are down from the historical averages, February and March both showed higher than normal incidents compared to the average. This type of analysis, is useful of distinguishing months where violence was elevated relative to what history would predict, versus months that appear high because summer numbers are always high. 
+
+
+
+## Conclusion and Bias
+
+This analysis examined NYC shooting incidents over time, identifying both a long-term trend of declining and then rebounding incidents, and a consistent seasonal pattern in which summer months typically produce the highest incident counts. While the data provides a useful overview, it is important to recognize that it reflects only reported shootings reported by the NYPD. Incidents that go unreported, due to various reasons, are absent from this picture entirely. Additionally, because the dataset begins at a fixed point in time, 2006, early years serve as the baseline for comparison, which may not represent a historical norm. Future analysis could expand on these findings by incorporating unreported incident estimates, including data prior to 2006, or comparing NYC trends against other major cities to provide broader context.
